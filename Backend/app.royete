@@ -1,0 +1,144 @@
+# Chatbot AI Agentic - Ultra Config File (app.royete)
+# Generated: 2025-10-30
+# Purpose: Describe all runtime knobs for the FastAPI + SAP + LLM integration stack.
+# Format: YAML-like structure (rename to .yaml if desired). Indentation matters. All values are strings unless noted.
+
+meta:
+  app_name: "SAP Plant Conversational Hub"
+  environment: "dev"            # dev | staging | prod
+  version: "1.1"
+  generated_by: "GitHub Copilot"
+  description: >
+    High-level configuration blueprint. Stores FastAPI tuning, logging policy,
+    SAP endpoints, LLM provider settings, NLP extraction preferences, and
+    ops automation toggles. Load this file at startup with a YAML parser or a
+    pydantic BaseSettings wrapper.
+
+fastapi:
+  host: "0.0.0.0"
+  port: 8000
+  reload: true
+  workers: 2
+  cors:
+    allow_origins:
+      - "http://localhost:5173"
+      - "https://sap-ui.example.com"
+    allow_methods: ["GET", "POST", "OPTIONS"]
+    allow_headers: ["*"]
+    allow_credentials: true
+  middleware:
+    - name: "RequestIDMiddleware"
+      enabled: true
+    - name: "GZipMiddleware"
+      enabled: true
+      minimum_size: 1000
+
+logging:
+  level: "INFO"
+  json_format: false
+  handlers:
+    console:
+      enabled: true
+      colorize: true
+    file:
+      enabled: true
+      path: "logs/app.log"
+      max_bytes: 10485760 # 10 MB
+      backup_count: 5
+  slow_request_threshold_ms: 1200
+
+sap:
+  base_url: "${SAP_BASE_URL:-https://sap-gateway.example.com/sap/opu/odata/sap}"
+  username: "${SAP_USERNAME:-}"
+  password: "${SAP_PASSWORD:-}"
+  client: "${SAP_CLIENT:-100}"
+  entity_sets:
+    telephone: "TELEPHONEADDRSet"
+    postal: "PLANTPOSTALADDRSet"
+  timeouts:
+    connect: 10
+    read: 30
+  retry_policy:
+    max_attempts: 3
+    backoff_seconds: 2
+    status_forcelist: [429, 500, 502, 503, 504]
+  csrf:
+    prefetch_path: "TELEPHONEADDRSet"
+    cache_ttl_seconds: 900
+
+llm:
+  provider: "langchain-openai"
+  default_model: "bedrock.anthropic.claude-opus-4"
+  base_url: "https://genai-sharedservice-americas.pwcinternal.com"
+  api_key_env: "OPENAI_API_KEY"
+  temperature: 0.0
+  max_tokens: 4000
+  request_timeout: 30
+  streaming: false
+  fallbacks:
+    - model: "bedrock.anthropic.claude-sonnet"
+      temperature: 0.2
+    - model: "gpt-4o-mini"
+      temperature: 0.1
+
+nlp:
+  telephone_prompt_path: "prompts/telephone_prompt.md"
+  postal_prompt_path: "prompts/postal_prompt.md"
+  cache_results: true
+  cache_ttl_seconds: 600
+  validation:
+    enforce_json_schema: true
+    allow_code_fences: false
+  telemetry:
+    capture_span_details: true
+    redact_entities:
+      - "SAP_PASSWORD"
+      - "SAP_USERNAME"
+
+observability:
+  metrics:
+    enabled: true
+    exporter: "prometheus"
+    endpoint: "/metrics"
+  tracing:
+    enabled: true
+    provider: "opentelemetry"
+    sampling_rate: 0.05
+  healthcheck:
+    path: "/health"
+    include_dependencies: true
+    dependency_checks:
+      - name: "sap_gateway"
+        type: "http"
+        url: "${sap.base_url}/${sap.entity_sets.telephone}?$top=1"
+        timeout: 5
+
+security:
+  rate_limiter:
+    enabled: true
+    requests_per_minute: 120
+  audit_log:
+    enabled: true
+    redact_fields: ["password", "api_key", "token"]
+  allowed_llm_audience:
+    - "sap-operations"
+    - "plant-maintenance"
+
+ops:
+  auto_migrate:
+    enabled: false
+    script: "scripts/migrate_sap_metadata.py"
+  backup_config:
+    enabled: true
+    bucket: "sap-chatbot-backups"
+    schedule_cron: "0 3 * * *"
+  feature_flags:
+    general_chat_enabled: true
+    telephone_flow_enabled: true
+    postal_flow_enabled: true
+    experimental_routing: false
+
+# Usage hint:
+#   Rename to app.yaml or similar, then parse with `yaml.safe_load` or pydantic.
+#   Environment variable placeholders (${VAR:-default}) follow shell expansion semantics.
+#   Keep secrets in env vars or secret manager, not in this file. 

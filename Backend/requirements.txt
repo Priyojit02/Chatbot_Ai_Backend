@@ -1,0 +1,22 @@
+# Project runtime requirements for Backend
+# Install with: pip install -r requirements.txt
+
+fastapi[standard]
+pydantic>=2,<3  # align with FastAPI >=0.100
+uvicorn
+requests
+python-dotenv
+
+# LangChain / LLM integration (monolithic package should satisfy most imports)
+langchain
+# Needed for ChatOpenAI import path used in code
+langchain-openai
+# YAML support for config loader
+PyYAML
+# If your environment uses modular LangChain packages (the code imports langchain_core and langchain_openai), install these instead:
+# langchain-core
+# langchain-openai
+
+# Optional / dev/test
+httpx  # useful for testing HTTP endpoints
+pytest

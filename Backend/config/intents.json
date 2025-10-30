@@ -1,0 +1,32 @@
+{
+  "intents": {
+    "GetTelephoneAddress": {
+      "handler": "sap_telephone",
+      "required": []
+    },
+    "CreateTelephoneAddress": {
+      "handler": "sap_telephone",
+      "required": ["PLANT"]
+    },
+    "UpdateTelephoneAddress": {
+      "handler": "sap_telephone",
+      "required": ["PLANT"]
+    },
+    "GetPostalAddress": {
+      "handler": "sap_postal",
+      "required": []
+    },
+    "CreatePostalAddress": {
+      "handler": "sap_postal",
+      "required": ["PLANT"]
+    },
+    "UpdatePostalAddress": {
+      "handler": "sap_postal",
+      "required": ["PLANT"]
+    },
+    "GeneralChat": {
+      "handler": "general_chat",
+      "required": []
+    }
+  }
+}
