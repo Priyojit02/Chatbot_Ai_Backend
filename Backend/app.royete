@@ -1,144 +1,162 @@
-# Chatbot AI Agentic - Ultra Config File (app.royete)
-# Generated: 2025-10-30
-# Purpose: Describe all runtime knobs for the FastAPI + SAP + LLM integration stack.
-# Format: YAML-like structure (rename to .yaml if desired). Indentation matters. All values are strings unless noted.
+from __future__ import annotations
+from typing import AsyncGenerator
+import httpx
+from fastapi import APIRouter, HTTPException, Depends, status
+from loguru import logger
 
-meta:
-  app_name: "SAP Plant Conversational Hub"
-  environment: "dev"            # dev | staging | prod
-  version: "1.1"
-  generated_by: "GitHub Copilot"
-  description: >
-    High-level configuration blueprint. Stores FastAPI tuning, logging policy,
-    SAP endpoints, LLM provider settings, NLP extraction preferences, and
-    ops automation toggles. Load this file at startup with a YAML parser or a
-    pydantic BaseSettings wrapper.
+from app.models.schemas import (
+    ChatRequest, ChatResponse, ODataGetRequest, ODataPostRequest,
+)
+from app.services.odata_client import ODataService
 
-fastapi:
-  host: "0.0.0.0"
-  port: 8000
-  reload: true
-  workers: 2
-  cors:
-    allow_origins:
-      - "http://localhost:5173"
-      - "https://sap-ui.example.com"
-    allow_methods: ["GET", "POST", "OPTIONS"]
-    allow_headers: ["*"]
-    allow_credentials: true
-  middleware:
-    - name: "RequestIDMiddleware"
-      enabled: true
-    - name: "GZipMiddleware"
-      enabled: true
-      minimum_size: 1000
+# Optional NLP imports (app should still boot without NLP stack)
+try:
+    from app.services.nlp_router import (
+        available as nlp_available,
+        parse_to_intent,
+        chat_general as nlp_chat_general,
+    )
+except Exception:
+    def nlp_available() -> bool:  # type: ignore
+        return False
+    parse_to_intent = None        # type: ignore
+    nlp_chat_general = None       # type: ignore
 
-logging:
-  level: "INFO"
-  json_format: false
-  handlers:
-    console:
-      enabled: true
-      colorize: true
-    file:
-      enabled: true
-      path: "logs/app.log"
-      max_bytes: 10485760 # 10 MB
-      backup_count: 5
-  slow_request_threshold_ms: 1200
+# IMPORTANT:
+# aggregator mounts us with: include_router(chat_router, prefix="/chat", tags=["chat"])
+# so keep path "" here to expose POST /api/chat
+router = APIRouter()
 
-sap:
-  base_url: "${SAP_BASE_URL:-https://sap-gateway.example.com/sap/opu/odata/sap}"
-  username: "${SAP_USERNAME:-}"
-  password: "${SAP_PASSWORD:-}"
-  client: "${SAP_CLIENT:-100}"
-  entity_sets:
-    telephone: "TELEPHONEADDRSet"
-    postal: "PLANTPOSTALADDRSet"
-  timeouts:
-    connect: 10
-    read: 30
-  retry_policy:
-    max_attempts: 3
-    backoff_seconds: 2
-    status_forcelist: [429, 500, 502, 503, 504]
-  csrf:
-    prefetch_path: "TELEPHONEADDRSet"
-    cache_ttl_seconds: 900
+# Proper dependency that guarantees httpx client cleanup
+async def get_service() -> AsyncGenerator[ODataService, None]:
+    svc = ODataService()
+    try:
+        yield svc
+    finally:
+        try:
+            await svc.aclose()
+        except Exception as e:
+            logger.warning(f"Failed to close ODataService client: {e}")
 
-llm:
-  provider: "langchain-openai"
-  default_model: "bedrock.anthropic.claude-opus-4"
-  base_url: "https://genai-sharedservice-americas.pwcinternal.com"
-  api_key_env: "OPENAI_API_KEY"
-  temperature: 0.0
-  max_tokens: 4000
-  request_timeout: 30
-  streaming: false
-  fallbacks:
-    - model: "bedrock.anthropic.claude-sonnet"
-      temperature: 0.2
-    - model: "gpt-4o-mini"
-      temperature: 0.1
+@router.post("", response_model=ChatResponse)
+async def chat(req: ChatRequest, service: ODataService = Depends(get_service)):
+    # Ensure NLP is available
+    try:
+        if not nlp_available():
+            raise HTTPException(status_code=503, detail="NLP (LangChain) is disabled or unavailable")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("NLP availability check failed")
+        raise HTTPException(status_code=503, detail=f"NLP unavailable: {e}")
 
-nlp:
-  telephone_prompt_path: "prompts/telephone_prompt.md"
-  postal_prompt_path: "prompts/postal_prompt.md"
-  cache_results: true
-  cache_ttl_seconds: 600
-  validation:
-    enforce_json_schema: true
-    allow_code_fences: false
-  telemetry:
-    capture_span_details: true
-    redact_entities:
-      - "SAP_PASSWORD"
-      - "SAP_USERNAME"
+    # Try to parse an OData intent; if that fails, treat as general chat
+    try:
+        nlp = parse_to_intent(req.message)  # type: ignore
+        intent = (nlp.intent_json or {}).get("intent", "").lower()
+    except Exception:
+        if nlp_chat_general is None:
+            raise HTTPException(status_code=400, detail="NLP parsing failed and no general chat available")
+        text = nlp_chat_general(req.message).text  # <-- ensure string
+        return ChatResponse(ok=True, stage="general", intent="general", result={"text": text})
 
-observability:
-  metrics:
-    enabled: true
-    exporter: "prometheus"
-    endpoint: "/metrics"
-  tracing:
-    enabled: true
-    provider: "opentelemetry"
-    sampling_rate: 0.05
-  healthcheck:
-    path: "/health"
-    include_dependencies: true
-    dependency_checks:
-      - name: "sap_gateway"
-        type: "http"
-        url: "${sap.base_url}/${sap.entity_sets.telephone}?$top=1"
-        timeout: 5
+    # If the parser explicitly said "general", route to general chat
+    if intent == "general":
+        if nlp_chat_general is None:
+            raise HTTPException(status_code=400, detail="General chat unavailable")
+        text = nlp_chat_general(req.message).text
+        return ChatResponse(ok=True, stage="general", intent="general", result={"text": text})
 
-security:
-  rate_limiter:
-    enabled: true
-    requests_per_minute: 120
-  audit_log:
-    enabled: true
-    redact_fields: ["password", "api_key", "token"]
-  allowed_llm_audience:
-    - "sap-operations"
-    - "plant-maintenance"
+    # Optional policy guard
+    intent_json = nlp.intent_json
+    if req.allowed_services and intent_json.get("service") not in set(req.allowed_services):
+        raise HTTPException(status_code=403, detail="Service not allowed by policy")
 
-ops:
-  auto_migrate:
-    enabled: false
-    script: "scripts/migrate_sap_metadata.py"
-  backup_config:
-    enabled: true
-    bucket: "sap-chatbot-backups"
-    schedule_cron: "0 3 * * *"
-  feature_flags:
-    general_chat_enabled: true
-    telephone_flow_enabled: true
-    postal_flow_enabled: true
-    experimental_routing: false
+    kind = intent
 
-# Usage hint:
-#   Rename to app.yaml or similar, then parse with `yaml.safe_load` or pydantic.
-#   Environment variable placeholders (${VAR:-default}) follow shell expansion semantics.
-#   Keep secrets in env vars or secret manager, not in this file. 
+    # -------- GET --------
+    if kind == "get":
+        try:
+            get_body = ODataGetRequest(
+                service=intent_json["service"],
+                entity=intent_json["entity"],
+                fields=intent_json.get("fields"),
+                filters=intent_json.get("filters"),
+                top=intent_json.get("top", 100),
+                skip=intent_json.get("skip", 0),
+                orderby=intent_json.get("orderby"),
+            )
+            data = await service.execute_get(get_body)
+            return ChatResponse(ok=True, stage="get", intent="get", nlp_json=intent_json, result=data)
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code if e.response else 502
+            detail = e.response.text if e.response else str(e)
+            logger.exception("GET failed with upstream status %s", code)
+            raise HTTPException(status_code=code, detail=detail)
+        except Exception as e:
+            logger.exception("GET failed")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+    # ----- CREATE / UPDATE -----
+    if kind in ("create", "update"):
+        try:
+            post_body = ODataPostRequest(
+                action="create" if kind == "create" else "update",
+                service=intent_json["service"],
+                entity=intent_json["entity"],
+                key_fields=intent_json.get("key_fields"),
+                payload=intent_json.get("payload") or {},
+                confirm=bool(intent_json.get("confirm", False) or req.confirm),
+            )
+
+            # Preview-first unless explicitly disabled
+            if req.preview_only:
+                preview = await service.preview_post(post_body)
+                return ChatResponse(
+                    ok=True,
+                    stage="preview",
+                    intent=kind,
+                    nlp_json=intent_json,
+                    resolved_endpoint=preview.url,
+                    result=preview.model_dump(),
+                )
+
+            if not post_body.confirm:
+                raise HTTPException(status_code=400, detail="confirm must be true to execute create/update")
+
+            data = await service.execute_post(post_body)
+            return ChatResponse(ok=True, stage="executed", intent=kind, nlp_json=intent_json, result=data)
+
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code if e.response else 502
+            detail = e.response.text if e.response else str(e)
+            logger.exception("POST failed with upstream status %s", code)
+            raise HTTPException(status_code=code, detail=detail)
+        except Exception as e:
+            logger.exception("POST failed")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+    # Unsupported intent → treat as general chat instead of 400
+    if nlp_chat_general is not None:
+        text = nlp_chat_general(req.message).text
+        return ChatResponse(ok=True, stage="general", intent="general", result={"text": text})
+    raise HTTPException(status_code=400, detail="Unsupported intent")
+
+@router.post("/general", response_model=ChatResponse)
+async def general_chat(req: ChatRequest):
+    """General conversational chat (no OData execution)."""
+    try:
+        if not nlp_available() or nlp_chat_general is None:
+            raise HTTPException(status_code=503, detail="NLP (LangChain) is disabled or unavailable")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("NLP availability check failed")
+        raise HTTPException(status_code=503, detail=f"NLP unavailable: {e}")
+
+    try:
+        text = nlp_chat_general(req.message).text  # <-- ensure string
+        return ChatResponse(ok=True, stage="general", intent="general", result={"text": text})
+    except Exception as e:
+        logger.exception("General chat failed")
+        raise HTTPException(status_code=500, detail=str(e))
