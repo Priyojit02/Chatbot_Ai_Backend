@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
+from ..core.llm import get_llm
+from ..data.odata_loader import ODataSchemaLoader
+from ..data.odata_client import SAPClient
+from ..core.prompt import build_prompt_llm_parser_chain  # The PROMPT | LLM | PARSER chain
+
+class LLMOrchestrator:
+    """
+    Orchestrates SAP address assistant chat flow:
+    - uses the PROMPT → LLM → PARSER chain
+    - handles confirmation and SAP execution
+    """
+
+    def __init__(self):
+        self.llm = get_llm()
+        schema_dir = Path(__file__).resolve().parents[2] / "data" / "odata"
+        self.loader = ODataSchemaLoader(schema_dir)
+        self.odata_json = self.loader.get_schema_json()
+        self.chain = build_prompt_llm_parser_chain()
+
+    async def chat(self, user: str, state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        # ---------- 0) Confirmation short-circuit ----------
+        affirm = {"yes", "y", "confirm", "ok", "okay", "sure", "please do", "proceed", "go ahead"}
+        deny = {"no", "n", "cancel", "stop", "abort", "nope", "don't", "do not"}
+
+        if state and state.get("action") == "confirm":
+            msg = (user or "").strip().lower()
+
+            if msg in affirm:
+                svc = state.get("service")
+                ent = state.get("entity")
+                method = (state.get("method") or "POST").upper()
+                key_val = state.get("key_field")
+                payload = state.get("payload") or {}
+
+                try:
+                    sap_resp = await SAPClient.call(svc, ent, key_val, payload, method)
+                    return "✅ Update completed successfully.", {
+                        "action": "done",
+                        "service": svc,
+                        "entity": ent,
+                        "method": method,
+                        "key_field": key_val,
+                        "payload": payload,
+                        "sap_response": sap_resp,
+                    }
+                except Exception as e:
+                    return "❌ SAP call failed. Please review details and try again.", {
+                        "action": "error",
+                        "message": str(e)[:400],
+                    }
+
+            if msg in deny:
+                return "✅ Cancelled. No changes were made.", {"action": "done", "message": "cancelled"}
+
+        # ---------- 1) PROMPT → LLM → PARSER (chain) ----------
+        result = self.chain.invoke({
+            "user_input": user,
+            "odata_json": self.odata_json,
+            "state_json": state or {},
+        })
+
+        bot_text = result["bot"]
+        control_model = result["control"]
+        control = control_model.model_dump() if hasattr(control_model, "model_dump") else dict(control_model)
+
+        # ---------- 2) Force confirm before execute ----------
+        if control.get("action") == "execute":
+            svc = control.get("service") or ""
+            ent = control.get("entity") or ""
+            method = (control.get("method") or "POST").upper()
+            key_val = control.get("key_field")
+            payload = control.get("payload") or {}
+
+            lines = ["Please confirm these details before I proceed:"]
+            if key_val:
+                lines.append(f"- Key (Plant): {key_val}")
+            for k, v in payload.items():
+                lines.append(f"- {k}: {v}")
+
+            return "\n".join(lines), {
+                "action": "confirm",
+                "service": svc,
+                "entity": ent,
+                "method": method,
+                "key_field": key_val,
+                "payload": payload,
+            }
+
+        # ---------- 3) Default response ----------
+        return bot_text, control
