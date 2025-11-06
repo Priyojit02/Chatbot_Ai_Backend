@@ -6,7 +6,6 @@ import html
 # Backend Configuration
 # ---------------------------------------
 BACKEND_URL = "http://127.0.0.1:8006/chat"  # Your FastAPI /chat endpoint
-
 st.set_page_config(page_title="SAP AI Address Assistant", page_icon="💬", layout="wide")
 
 # ---------------------------------------
@@ -17,13 +16,10 @@ st.markdown("""
 /* Layout */
 .block-container {padding-top: .5rem; padding-bottom: 2rem; max-width: 900px; margin: auto;}
 
-/* Title bar */
-.title-bar {
-  display:flex; align-items:baseline; justify-content:space-between; gap:1rem;
-  margin: .25rem 0 1rem 0;
-}
-.title-bar h1 { margin:0; font-size: 22px; font-weight: 700; }
-.title-sub { color:#6b7280; font-size: 13px; }
+/* Title */
+.app-header { margin: .25rem 0 1rem 0; }
+.app-title  { font-size: 24px; font-weight: 700; margin: 0; line-height: 1.2; }
+.app-sub    { font-size: 13px; color: #6b7280; margin-top: .2rem; line-height: 1.2; }
 
 /* Chat bubbles */
 .chat-bubble {
@@ -105,17 +101,18 @@ def render_message(role, content):
     )
 
 # ---------------------------------------
-# Header (clean + aligned)
+# Header (full width, no columns to avoid clipping)
 # ---------------------------------------
-left, right = st.columns([0.85, 0.15])
-with left:
-    st.markdown("""
-    <div class="title-bar">
-      <h1>SAP AI Address Assistant</h1>
-      <span class="title-sub">Chat with your backend — fully context-aware.</span>
-    </div>
-    """, unsafe_allow_html=True)
-with right:
+st.markdown("""
+<div class="app-header">
+  <div class="app-title">SAP AI Address Assistant</div>
+  <div class="app-sub">Chat with your backend — fully context-aware.</div>
+</div>
+""", unsafe_allow_html=True)
+
+# Reset button on a separate narrow column so the title keeps full width
+_, reset_col = st.columns([0.88, 0.12])
+with reset_col:
     if st.button("Reset", use_container_width=True):
         st.session_state.clear()
         st.rerun()
@@ -155,7 +152,7 @@ if user_input:
     st.session_state.messages.append({"role": "bot", "content": reply})
     render_message("bot", reply)
 
-    # Optional: show the backend state JSON (remove this expander if you don't want it)
+    # Optional: show the backend state JSON (remove if not needed)
     with st.expander("Backend State", expanded=False):
         st.json(new_state)
 
