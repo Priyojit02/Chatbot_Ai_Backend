@@ -5,7 +5,8 @@ import streamlit as st
 # -----------------------------
 # BASIC CONFIG
 # -----------------------------
-BACKEND_URL = "http://127.0.0.1:8004/chat"   # your FastAPI backend endpoint
+# Backend FastAPI endpoint (can also set as environment variable)
+BACKEND_URL = "http://127.0.0.1:8004/chat"
 
 st.set_page_config(
     page_title="SAP AI Address Assistant",
@@ -14,7 +15,7 @@ st.set_page_config(
 )
 
 # -----------------------------
-# CUSTOM STYLING
+# CUSTOM CSS (UI)
 # -----------------------------
 CUSTOM_CSS = '''
 <style>
@@ -43,29 +44,35 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 # SESSION STATE
 # -----------------------------
 if "messages" not in st.session_state:
-    st.session_state.messages = []   # [{"role": "user"/"assistant", "content": "...", "choices": [...] }]
+    st.session_state.messages = []  # [{role, content, choices}]
 if "backend_state" not in st.session_state:
-    st.session_state.backend_state = {}
+    st.session_state.backend_state = {}  # what backend sends
 if "pending_input" not in st.session_state:
     st.session_state.pending_input = ""
 
 # -----------------------------
-# HELPERS
+# BACKEND CALL
 # -----------------------------
 def post_to_backend(user_text: str, state: dict):
-    """Send the message and state to FastAPI backend and return response."""
+    """Send user input + last state to backend, return new reply + new state."""
     payload = {"user": user_text, "state": state or {}}
     try:
         resp = requests.post(BACKEND_URL, json=payload, timeout=90)
-        if resp.status_code >= 400:
-            return {"error": f"{resp.status_code}: {resp.text}"}
+        resp.raise_for_status()
         data = resp.json()
-        return {"reply": data.get("reply", ""), "state": data.get("state", {})}
-    except requests.RequestException as e:
+        # Only return whatever backend sends — no manipulation
+        return {
+            "reply": data.get("reply", ""),
+            "state": data.get("state", {})
+        }
+    except Exception as e:
         return {"error": str(e)}
 
+# -----------------------------
+# MESSAGE RENDERING
+# -----------------------------
 def render_message(role: str, content: str, choices=None):
-    """Display user or assistant message with style and optional choices."""
+    """Render chat bubble + optional quick replies."""
     is_user = role == "user"
     row_class = "row right" if is_user else "row"
     avatar_class = "avatar user" if is_user else "avatar bot"
@@ -84,7 +91,7 @@ def render_message(role: str, content: str, choices=None):
         unsafe_allow_html=True
     )
 
-    # Quick replies (from backend state["choices"])
+    # If backend provided choices (like buttons)
     if (not is_user) and choices:
         st.markdown('<div class="quick-replies">', unsafe_allow_html=True)
         for i, choice in enumerate(choices):
@@ -98,34 +105,37 @@ def render_message(role: str, content: str, choices=None):
 left, right = st.columns([0.72, 0.28])
 with left:
     st.title("SAP AI Address Assistant")
-    st.caption("Conversational frontend with backend state flow.")
+    st.caption("Conversational frontend (auto state fetch & flow).")
 with right:
     if st.button("Reset chat"):
         st.session_state.clear()
         st.rerun()
 
 # -----------------------------
-# CHAT HISTORY
+# SHOW CHAT HISTORY
 # -----------------------------
-for m in st.session_state.messages:
-    render_message(m["role"], m["content"], m.get("choices"))
+for msg in st.session_state.messages:
+    render_message(msg["role"], msg["content"], msg.get("choices"))
 
 # -----------------------------
 # USER INPUT
 # -----------------------------
-user_text = st.chat_input("Type your message…")
+user_text = st.chat_input("Type your message...")
 
-# If a quick-reply was clicked
+# Handle quick reply
 if st.session_state.pending_input:
     user_text = st.session_state.pending_input
     st.session_state.pending_input = ""
 
+# -----------------------------
+# MAIN CHAT LOGIC
+# -----------------------------
 if user_text:
-    # Show user message
+    # 1. Show user's message
     st.session_state.messages.append({"role": "user", "content": user_text})
     render_message("user", user_text)
 
-    # Send to backend with previous state (context)
+    # 2. Send to backend with last state
     result = post_to_backend(user_text, st.session_state.get("backend_state", {}))
 
     if "error" in result:
@@ -133,11 +143,19 @@ if user_text:
         st.session_state.messages.append({"role": "assistant", "content": bot_text})
         render_message("assistant", bot_text)
     else:
+        # 3. Store whatever backend sends
         bot_text = result.get("reply", "")
-        new_state = result.get("state", {}) or {}
-        st.session_state.backend_state = new_state
+        st.session_state.backend_state = result.get("state", {})  # <-- no modification
+        choices = None
 
-        # Extract quick choices if available
-        choices = new_state.get("choices") if isinstance(new_state, dict) else None
-        st.session_state.messages.append({"role": "assistant", "content": bot_text, "choices": choices})
+        # if backend includes choices, show them
+        if isinstance(st.session_state.backend_state, dict):
+            choices = st.session_state.backend_state.get("choices")
+
+        # 4. Display reply
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": bot_text,
+            "choices": choices
+        })
         render_message("assistant", bot_text, choices=choices)
