@@ -1,161 +1,192 @@
-# app.py
-import requests
 import streamlit as st
+import requests
+import json
+import uuid
 
-# -----------------------------
-# BASIC CONFIG
-# -----------------------------
-# Backend FastAPI endpoint (can also set as environment variable)
-BACKEND_URL = "http://127.0.0.1:8004/chat"
+# ---------------------------------------
+# Backend Configuration
+# ---------------------------------------
+BACKEND_URL = "http://127.0.0.1:8004/chat"  # Your FastAPI /chat endpoint
 
-st.set_page_config(
-    page_title="SAP AI Address Assistant",
-    page_icon="🤖",
-    layout="wide",
-)
+st.set_page_config(page_title="SAP AI Chat Assistant", page_icon="💬", layout="wide")
 
-# -----------------------------
-# CUSTOM CSS (UI)
-# -----------------------------
-CUSTOM_CSS = '''
+# ---------------------------------------
+# Custom Styling
+# ---------------------------------------
+st.markdown("""
 <style>
-.block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
-.chat-bubble {padding: 0.7rem 0.9rem; border-radius: 1.2rem; max-width: 72%;
-              word-wrap: break-word; line-height: 1.35; font-size: 0.95rem;}
-.chat-left  {background: rgba(0,0,0,0.06); color: #111; border-top-left-radius: 0.4rem;}
-.chat-right {background: #155E75; color: #fff; border-top-right-radius: 0.4rem; margin-left: auto;}
-.avatar {width: 36px; height: 36px; border-radius: 50%; display: inline-flex;
-         align-items: center; justify-content: center; margin-right: 0.5rem;
-         background: #0ea5e9; color: white; font-weight: 700;}
-.avatar.user {background: #155E75;}
-.avatar.bot {background: #111827;}
-.row {display: flex; gap: 0.6rem; margin: 0.25rem 0 0.6rem 0; align-items: flex-start;}
-.row.right {justify-content: flex-end;}
-.row.right .avatar {order: 2; margin-right: 0; margin-left: 0.5rem;}
-.row.right .bubble-wrap {order: 1; justify-content: flex-end;}
-.quick-replies {display: flex; flex-wrap: wrap; gap: 0.45rem; margin-top: 0.4rem;}
-.quick-replies button {border-radius: 999px; padding: 0.25rem 0.7rem; border: 1px solid rgba(0,0,0,0.15);}
-.stChatInput {position: sticky; bottom: 0; background: white;}
-</style>
-'''
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+/* Layout */
+.block-container {padding-top: 1rem; padding-bottom: 2rem; max-width: 900px; margin: auto;}
 
-# -----------------------------
-# SESSION STATE
-# -----------------------------
+/* Chat bubbles */
+.chat-bubble {
+    padding: 0.7rem 1rem;
+    border-radius: 1rem;
+    max-width: 75%;
+    word-wrap: break-word;
+    font-size: 0.95rem;
+    line-height: 1.4;
+}
+.chat-user {
+    background-color: #dcf8c6; /* WhatsApp green bubble */
+    margin-left: auto;
+    border-bottom-right-radius: 0.3rem;
+}
+.chat-bot {
+    background-color: #ffffff;
+    border: 1px solid #e5e5e5;
+    border-bottom-left-radius: 0.3rem;
+}
+
+/* Message container */
+.msg-row {
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 0.8rem;
+}
+.msg-row.user { justify-content: flex-end; }
+.msg-row.bot { justify-content: flex-start; }
+
+/* Avatar */
+.avatar {
+    width: 35px; height: 35px;
+    border-radius: 50%;
+    font-weight: bold;
+    display: flex; align-items: center; justify-content: center;
+    color: white; margin: 0 0.5rem;
+}
+.avatar.user { background-color: #075e54; order: 2; }
+.avatar.bot { background-color: #25d366; order: 1; }
+
+/* Quick replies */
+.quick-replies { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
+.quick-replies button {
+    border-radius: 1rem; border: 1px solid #ccc; padding: 0.3rem 0.7rem;
+    background: #f0f0f0; color: #333; cursor: pointer;
+}
+
+/* Chat input box (sticky) */
+.stChatInput { position: sticky; bottom: 0; background-color: white; }
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------
+# Session State Initialization
+# ---------------------------------------
 if "messages" not in st.session_state:
-    st.session_state.messages = []  # [{role, content, choices}]
+    st.session_state.messages = []  # [{"role": "user"/"bot", "content": str}]
 if "backend_state" not in st.session_state:
-    st.session_state.backend_state = {}  # what backend sends
+    st.session_state.backend_state = {}
 if "pending_input" not in st.session_state:
     st.session_state.pending_input = ""
 
-# -----------------------------
-# BACKEND CALL
-# -----------------------------
-def post_to_backend(user_text: str, state: dict):
-    """Send user input + last state to backend, return new reply + new state."""
-    payload = {"user": user_text, "state": state or {}}
+# ---------------------------------------
+# Helper: Call backend API
+# ---------------------------------------
+def call_backend(user_text, state):
+    """Send message + previous state to backend and return reply + state."""
     try:
-        resp = requests.post(BACKEND_URL, json=payload, timeout=90)
-        resp.raise_for_status()
-        data = resp.json()
-        # Only return whatever backend sends — no manipulation
-        return {
-            "reply": data.get("reply", ""),
-            "state": data.get("state", {})
-        }
+        payload = {"user": user_text, "state": state or {}}
+        response = requests.post(BACKEND_URL, json=payload, timeout=90)
+        response.raise_for_status()
+        return response.json()
     except Exception as e:
-        return {"error": str(e)}
+        return {"reply": f"❌ Backend error: {e}", "state": state or {}}
 
-# -----------------------------
-# MESSAGE RENDERING
-# -----------------------------
-def render_message(role: str, content: str, choices=None):
-    """Render chat bubble + optional quick replies."""
+# ---------------------------------------
+# Helper: Render messages
+# ---------------------------------------
+def render_message(role, content, choices=None):
+    """Render chat bubble for user or bot."""
     is_user = role == "user"
-    row_class = "row right" if is_user else "row"
+    msg_class = "user" if is_user else "bot"
+    bubble_class = "chat-bubble chat-user" if is_user else "chat-bubble chat-bot"
     avatar_class = "avatar user" if is_user else "avatar bot"
     avatar_text = "U" if is_user else "🤖"
-    bubble_class = "chat-bubble chat-right" if is_user else "chat-bubble chat-left"
 
+    # Message row
     st.markdown(
-        f'''
-        <div class="{row_class}">
+        f"""
+        <div class="msg-row {msg_class}">
             <div class="{avatar_class}">{avatar_text}</div>
-            <div class="bubble-wrap">
-                <div class="{bubble_class}">{content}</div>
-            </div>
+            <div class="{bubble_class}">{content}</div>
         </div>
-        ''',
-        unsafe_allow_html=True
+        """,
+        unsafe_allow_html=True,
     )
 
-    # If backend provided choices (like buttons)
-    if (not is_user) and choices:
-        st.markdown('<div class="quick-replies">', unsafe_allow_html=True)
-        for i, choice in enumerate(choices):
-            if st.button(choice, key=f"qr_{len(st.session_state.messages)}_{i}"):
-                st.session_state.pending_input = choice
-        st.markdown('</div>', unsafe_allow_html=True)
+    # Render quick reply buttons (if backend provides them)
+    if not is_user and choices:
+        with st.container():
+            st.markdown('<div class="quick-replies">', unsafe_allow_html=True)
+            for choice in choices:
+                unique_key = str(uuid.uuid4())
+                if st.button(choice, key=unique_key):
+                    st.session_state.pending_input = choice
+            st.markdown("</div>", unsafe_allow_html=True)
 
-# -----------------------------
-# HEADER
-# -----------------------------
-left, right = st.columns([0.72, 0.28])
-with left:
-    st.title("SAP AI Address Assistant")
-    st.caption("Conversational frontend (auto state fetch & flow).")
-with right:
-    if st.button("Reset chat"):
+# ---------------------------------------
+# Header
+# ---------------------------------------
+col1, col2 = st.columns([0.8, 0.2])
+with col1:
+    st.markdown("### 💬 SAP AI Address Assistant")
+    st.caption("Chat with your backend — fully context-aware (WhatsApp-style UI).")
+with col2:
+    if st.button("🔄 Reset Chat"):
         st.session_state.clear()
         st.rerun()
 
-# -----------------------------
-# SHOW CHAT HISTORY
-# -----------------------------
+st.divider()
+
+# ---------------------------------------
+# Show message history
+# ---------------------------------------
 for msg in st.session_state.messages:
     render_message(msg["role"], msg["content"], msg.get("choices"))
 
-# -----------------------------
-# USER INPUT
-# -----------------------------
-user_text = st.chat_input("Type your message...")
+# ---------------------------------------
+# Chat input area
+# ---------------------------------------
+user_input = st.chat_input("Type your message...")
 
-# Handle quick reply
+# Handle quick-reply selection
 if st.session_state.pending_input:
-    user_text = st.session_state.pending_input
+    user_input = st.session_state.pending_input
     st.session_state.pending_input = ""
 
-# -----------------------------
-# MAIN CHAT LOGIC
-# -----------------------------
-if user_text:
-    # 1. Show user's message
-    st.session_state.messages.append({"role": "user", "content": user_text})
-    render_message("user", user_text)
+# ---------------------------------------
+# Send new message
+# ---------------------------------------
+if user_input:
+    # Add user message
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    render_message("user", user_input)
 
-    # 2. Send to backend with last state
-    result = post_to_backend(user_text, st.session_state.get("backend_state", {}))
+    # Call backend with previous state
+    result = call_backend(user_input, st.session_state.get("backend_state", {}))
 
-    if "error" in result:
-        bot_text = f"❌ Backend error: {result['error']}"
-        st.session_state.messages.append({"role": "assistant", "content": bot_text})
-        render_message("assistant", bot_text)
-    else:
-        # 3. Store whatever backend sends
-        bot_text = result.get("reply", "")
-        st.session_state.backend_state = result.get("state", {})  # <-- no modification
-        choices = None
+    # Extract backend reply + new state
+    reply = result.get("reply", "")
+    new_state = result.get("state", {}) or {}
 
-        # if backend includes choices, show them
-        if isinstance(st.session_state.backend_state, dict):
-            choices = st.session_state.backend_state.get("choices")
+    # Save new state for next turn
+    st.session_state.backend_state = new_state
 
-        # 4. Display reply
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": bot_text,
-            "choices": choices
-        })
-        render_message("assistant", bot_text, choices=choices)
+    # Save & display bot reply
+    choices = None
+    if isinstance(new_state, dict):
+        choices = new_state.get("choices")
+
+    st.session_state.messages.append({
+        "role": "bot",
+        "content": reply,
+        "choices": choices
+    })
+    render_message("bot", reply, choices)
+
+    # Optional: show the backend state JSON for debugging (can hide later)
+    with st.expander("📦 Backend State", expanded=False):
+        st.json(new_state)
+
+    st.rerun()
